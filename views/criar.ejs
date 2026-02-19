@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Criar</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <main class="wrap">
+    <h1>Criar Logo</h1>
+    <p>Descreva a logo. (Evite marcas conhecidas; descreva os elementos.)</p>
+
+    <textarea id="prompt" rows="4" placeholder="Ex: gema verde com espada pixel e arena..."></textarea>
+    <button id="gen">Gerar</button>
+    <div class="muted" id="status"></div>
+
+    <div class="result">
+      <img id="img" alt="Logo gerada" />
+    </div>
+  </main>
+
+  <script>
+    const token = "<%= token %>";
+    const btn = document.getElementById("gen");
+    const statusEl = document.getElementById("status");
+    const imgEl = document.getElementById("img");
+    const promptEl = document.getElementById("prompt");
+
+    btn.onclick = async () => {
+      btn.disabled = true;
+      statusEl.textContent = "Gerando...";
+      imgEl.style.display = "none";
+
+      try{
+        const r = await fetch("/api/generate", {
+          method: "POST",
+          headers: {"Content-Type":"application/json"},
+          body: JSON.stringify({ token, prompt: promptEl.value })
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || "Erro");
+
+        imgEl.src = data.image;
+        imgEl.style.display = "block";
+        statusEl.textContent = "Pronto ✅ (token consumido)";
+      } catch(e){
+        statusEl.textContent = "Falhou ❌ " + e.message;
+      } finally {
+        btn.disabled = false;
+      }
+    };
+  </script>
+</body>
+</html>
