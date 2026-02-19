@@ -8,7 +8,7 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 // No Render, BASE_URL deve ser tipo: https://seusite.onrender.com
-const BASE_URL = process.env.BASE_URL || `http://localhost:${port}`;
+const BASE_URL = process.env.BASE_URL || `https://logofive.onrender.com:${port}`;
 
 // Validar envs essenciais (evita crash silencioso)
 if (!process.env.STRIPE_SECRET_KEY) {
@@ -188,3 +188,4 @@ app.listen(port, () => {
   console.log(`Rodando em ${BASE_URL}`);
   console.log(`Webhook em ${BASE_URL}/webhook`);
 });
+
