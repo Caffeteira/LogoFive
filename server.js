@@ -6,22 +6,62 @@ dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 3000;
+
+// No Render, BASE_URL deve ser tipo: https://seusite.onrender.com
 const BASE_URL = process.env.BASE_URL || `http://localhost:${port}`;
+
+// Validar envs essenciais (evita crash silencioso)
+if (!process.env.STRIPE_SECRET_KEY) {
+  console.error("Faltou STRIPE_SECRET_KEY nas variáveis de ambiente.");
+}
+if (!process.env.STRIPE_WEBHOOK_SECRET) {
+  console.error("Faltou STRIPE_WEBHOOK_SECRET nas variáveis de ambiente.");
+}
+if (!process.env.OPENAI_API_KEY) {
+  console.error("Faltou OPENAI_API_KEY nas variáveis de ambiente.");
+}
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 app.set("view engine", "ejs");
+
+// ✅ WEBHOOK PRECISA VIR ANTES DO express.json()
+// Use raw body só nesta rota:
+app.post("/webhook", express.raw({ type: "application/json" }), (req, res) => {
+  let event;
+
+  try {
+    const sig = req.headers["stripe-signature"];
+    event = stripe.webhooks.constructEvent(
+      req.body, // <- Buffer raw
+      sig,
+      process.env.STRIPE_WEBHOOK_SECRET
+    );
+  } catch (err) {
+    console.error("Webhook signature error:", err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  if (event.type === "checkout.session.completed") {
+    const session = event.data.object;
+    const token = session?.metadata?.token;
+    if (token) paidTokens.add(token);
+  }
+
+  res.json({ received: true });
+});
+
+// Agora sim: middlewares normais
 app.use(express.static("public"));
-app.use(express.json({ limit: "2mb" }));
+app.use(express.urlencoded({ extended: true })); // ✅ para form POST
+app.use(express.json({ limit: "2mb" }));         // ✅ para requests JSON
 
 /**
  * “Banco” simples em memória:
- * paidTokens guarda tokens liberados após webhook confirmar pagamento.
- * Em produção: use um banco (SQLite/Postgres/Redis).
+ * Em produção, use banco de dados.
  */
 const paidTokens = new Set();
 
-/** Gera um token simples (para demo) */
 function makeToken() {
   return cryptoRandomString(32);
 }
@@ -36,12 +76,8 @@ app.get("/", (req, res) => {
   res.render("home");
 });
 
-/**
- * Cria Checkout Session de R$ 5,00 e redireciona
- */
 app.post("/pagar", async (req, res) => {
   try {
-    // um token que será liberado ao confirmar pagamento
     const token = makeToken();
 
     const session = await stripe.checkout.sessions.create({
@@ -50,7 +86,7 @@ app.post("/pagar", async (req, res) => {
         {
           price_data: {
             currency: "brl",
-            unit_amount: 500, // R$ 5,00 em centavos
+            unit_amount: 500,
             product_data: {
               name: "Geração de Logotipo (1x)",
               description: "Libera 1 geração de logo no site"
@@ -61,22 +97,19 @@ app.post("/pagar", async (req, res) => {
       ],
       success_url: `${BASE_URL}/sucesso?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${BASE_URL}/cancelado`,
-      metadata: {
-        token
-      }
+      metadata: { token }
     });
 
+    // Se sua home usa fetch, isso funciona.
+    // Se usa form normal, você pode fazer res.redirect(session.url) também.
     res.json({ url: session.url });
   } catch (e) {
+    console.error(e);
     res.status(500).json({ error: "Erro ao criar pagamento", details: String(e) });
   }
 });
 
-/**
- * Página de sucesso: mostra botão “Ir para criar”,
- * mas a liberação real vem do webhook (mais seguro).
- */
-app.get("/sucesso", async (req, res) => {
+app.get("/sucesso", (req, res) => {
   res.render("sucesso");
 });
 
@@ -84,23 +117,15 @@ app.get("/cancelado", (req, res) => {
   res.render("cancelado");
 });
 
-/**
- * Página de criação: precisa de token liberado
- */
 app.get("/criar", (req, res) => {
   const token = req.query.token;
   const ok = token && paidTokens.has(token);
 
-  if (!ok) {
-    return res.status(403).send("Acesso negado. Pague R$ 5 para liberar a criação.");
-  }
+  if (!ok) return res.status(403).send("Acesso negado. Pague R$ 5 para liberar a criação.");
+
   res.render("criar", { token });
 });
 
-/**
- * Endpoint de geração (só aceita se token estiver pago)
- * Aqui você chama a API de imagens (OpenAI) para gerar a logo.
- */
 app.post("/api/generate", async (req, res) => {
   try {
     const { token, prompt } = req.body;
@@ -112,7 +137,6 @@ app.post("/api/generate", async (req, res) => {
       return res.status(400).json({ error: "Prompt inválido." });
     }
 
-    // Evita usar marcas/IPs diretamente (mantém mais seguro)
     const safePrompt = prompt.replace(/minecraft|skywars/gi, "pixel fantasy").trim();
 
     const finalPrompt = `
@@ -125,7 +149,6 @@ Formato: app icon, cantos arredondados.
 Paleta: azul meia-noite, cinza aço, laranja fogo.
 `.trim();
 
-    // Chamada à OpenAI Images
     const resp = await fetch("https://api.openai.com/v1/images/generations", {
       method: "POST",
       headers: {
@@ -156,31 +179,9 @@ Paleta: azul meia-noite, cinza aço, laranja fogo.
 
     return res.status(500).json({ error: "Resposta inesperada da API." });
   } catch (e) {
+    console.error(e);
     res.status(500).json({ error: "Erro interno.", details: String(e) });
   }
-});
-
-/**
- * Webhook do Stripe: confirma pagamento e libera o token.
- * IMPORTANTE: webhook usa raw body.
- */
-app.post("/webhook", express.raw({ type: "application/json" }), (req, res) => {
-  let event;
-
-  try {
-    const sig = req.headers["stripe-signature"];
-    event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
-  } catch (err) {
-    return res.status(400).send(`Webhook Error: ${err.message}`);
-  }
-
-  if (event.type === "checkout.session.completed") {
-    const session = event.data.object;
-    const token = session?.metadata?.token;
-    if (token) paidTokens.add(token);
-  }
-
-  res.json({ received: true });
 });
 
 app.listen(port, () => {
